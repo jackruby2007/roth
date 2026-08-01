@@ -393,7 +393,12 @@ class BacktestEngine:
 
             # 2. Mark and manage an open position.
             if position is not None:
-                position.sessions_held += 1
+                # Only count sessions *after* the entry session. Incrementing on
+                # the entry bar meant a one-session time stop exited at the same
+                # close it entered -- a zero-length hold that can do nothing but
+                # pay the spread, and every longer time stop was off by one.
+                if position.entry_day < day:
+                    position.sessions_held += 1
                 mark = self._mark_position(position, chain)
                 if mark is not None:
                     excursion = (mark - position.entry_price_per_unit) * position.contracts

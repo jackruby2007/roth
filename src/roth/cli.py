@@ -352,6 +352,68 @@ def _report_theta_error(exc: Exception) -> None:
         console.print(f"  {line}")
 
 
+@app.command()
+def verify() -> None:
+    """Run the correctness tests.
+
+    The harness must prove it is not lying before any result from it is
+    trusted. A check that cannot run reports SKIP, never PASS.
+    """
+    from roth.verify import FAIL, PASS, SKIP, run_all
+
+    from roth.data.synth import is_synthetic
+
+    ensure_dirs()
+
+    if is_synthetic():
+        console.print(
+            "[yellow]SYNTHETIC DATA[/yellow] - checks that require real market data "
+            "will report SKIP.\n"
+        )
+
+    results = run_all(config.SYMBOLS)
+
+    table = Table(title="Correctness tests")
+    table.add_column("Check")
+    table.add_column("Result")
+    for r in results:
+        style = {PASS: "green", FAIL: "red", SKIP: "yellow"}[r.status]
+        table.add_row(r.name, f"[{style}]{r.status}[/{style}]")
+    console.print(table)
+
+    console.print()
+    for r in results:
+        style = {PASS: "green", FAIL: "red", SKIP: "yellow"}[r.status]
+        console.print(f"[{style}]{r.status}[/{style}] [bold]{r.name}[/bold]")
+        for line in _wrap(r.detail):
+            console.print(f"      {line}")
+        console.print()
+
+    failures = [r for r in results if r.status == FAIL]
+    skipped = [r for r in results if r.status == SKIP]
+
+    if failures:
+        console.print(
+            f"[red]{len(failures)} check(s) FAILED.[/red] Results from this harness "
+            "should not be trusted until they pass."
+        )
+        raise typer.Exit(code=1)
+
+    if skipped:
+        console.print(
+            f"[yellow]{len(results) - len(skipped)} passed, {len(skipped)} skipped.[/yellow]\n"
+            "A skipped check has not verified anything. See the reasons above."
+        )
+    else:
+        console.print("[green]All correctness tests passed.[/green]")
+
+
+def _wrap(text: str, width: int = 88) -> list[str]:
+    import textwrap
+
+    return textwrap.wrap(text, width=width) or [""]
+
+
 features_app = typer.Typer(no_args_is_help=True, help="Build and verify the feature store.")
 app.add_typer(features_app, name="features")
 
