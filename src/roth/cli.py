@@ -352,12 +352,80 @@ def _report_theta_error(exc: Exception) -> None:
         console.print(f"  {line}")
 
 
+@app.command("synth")
+def synth_cmd(
+    start: str = typer.Option("2022-01-01", help="First date YYYY-MM-DD."),
+    end: str = typer.Option("2024-12-31", help="Last date YYYY-MM-DD."),
+    symbol: str = typer.Option(None, help="One symbol, or all configured symbols by default."),
+    no_minute: bool = typer.Option(False, "--no-minute", help="Skip 1-minute bars."),
+    no_options: bool = typer.Option(False, "--no-options", help="Skip option chains."),
+    force: bool = typer.Option(False, "--force", help="Wipe existing raw data first."),
+) -> None:
+    """Generate a synthetic dataset so the pipeline can be exercised without a feed.
+
+    The data is fabricated. It proves the plumbing runs; it says nothing about
+    whether any strategy has edge.
+    """
+    import shutil
+
+    from roth.data.synth import generate, is_synthetic
+    from roth.paths import RAW
+    from roth.storage import read_manifest
+
+    if not read_manifest().empty:
+        if not force:
+            origin = "synthetic" if is_synthetic() else "REAL"
+            console.print(
+                f"[red]Raw data already exists[/red] and it is marked {origin}.\n"
+                "Generating would mix fabricated data into it.\n"
+                "Re-run with [cyan]--force[/cyan] to wipe the raw store first."
+            )
+            raise typer.Exit(code=1)
+        if RAW.exists():
+            shutil.rmtree(RAW)
+        ensure_dirs()
+
+    symbols = (symbol,) if symbol else config.SYMBOLS
+    console.print(f"[bold]Generating synthetic data[/bold] for {', '.join(symbols)}\n")
+
+    counts = generate(
+        _parse_date(start),
+        _parse_date(end),
+        symbols=symbols,
+        with_minute=not no_minute,
+        with_options=not no_options,
+    )
+
+    table = Table(title="Generated")
+    table.add_column("Dataset")
+    table.add_column("Rows", justify="right")
+    for k, v in counts.items():
+        table.add_row(k, f"{v:,}")
+    console.print(table)
+
+    console.print(
+        "\n[yellow]This data is fabricated.[/yellow] Every report built from it will "
+        "carry a synthetic-data banner. Strategy results from it are meaningless."
+    )
+
+
 @app.command()
 def status() -> None:
     """Show what is currently on disk."""
+    from roth.data.synth import is_synthetic, synthetic_info
     from roth.storage import dataset_summary
 
     ensure_dirs()
+
+    if is_synthetic():
+        info = synthetic_info() or {}
+        console.print(
+            "[yellow]SYNTHETIC DATA[/yellow] - generated "
+            f"{info.get('generated_at', 'unknown')}, "
+            f"{info.get('sessions', '?')} sessions.\n"
+            "Results computed from it demonstrate the pipeline runs, nothing more.\n"
+        )
+
     df = dataset_summary(None)
     if df.empty:
         console.print(
