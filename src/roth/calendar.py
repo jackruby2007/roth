@@ -23,6 +23,7 @@ instead of just returning a column of booleans.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import calendar as calendar_module
 from datetime import date, datetime, time, timedelta
 
 import pandas as pd
@@ -209,15 +210,37 @@ def load_event_dates(name: str) -> tuple[set[date], EventAvailability]:
 # ---------------------------------------------------------------------------
 
 
+def _pad_range(start: date, end: date) -> tuple[date, date]:
+    """Widen a range to whole quarters, plus a week either side.
+
+    Flags like `is_quarter_end` and `is_short_week` are properties of the
+    calendar, not of whatever slice of data happens to be loaded. Computing them
+    on a truncated range makes the last loaded session look like a quarter end
+    and the final partial week look short -- so the same day would carry
+    different labels depending on when the table was built. Padding, then
+    trimming back, keeps every flag a function of the calendar alone.
+    """
+    q_start = date(start.year, 3 * ((start.month - 1) // 3) + 1, 1)
+    q_end_month = 3 * ((end.month - 1) // 3) + 3
+    last_day = calendar_module.monthrange(end.year, q_end_month)[1]
+    q_end = date(end.year, q_end_month, last_day)
+    return q_start - timedelta(days=7), q_end + timedelta(days=7)
+
+
 def build_calendar(start: date, end: date) -> tuple[pd.DataFrame, list[EventAvailability]]:
     """One row per trading session with every calendar flag attached.
 
     Returns the frame and the availability record for each externally supplied
     event calendar, so a report can state plainly which flags are real.
     """
-    df = trading_sessions(start, end)
+    requested_start, requested_end = start, end
+    pad_start, pad_end = _pad_range(start, end)
+    df = trading_sessions(pad_start, pad_end)
     if df.empty:
         return df, []
+
+    # Flags are computed over the padded span, then trimmed below.
+    start, end = pad_start, pad_end
 
     days = pd.Series(df["day"])
 
@@ -259,7 +282,10 @@ def build_calendar(start: date, end: date) -> tuple[pd.DataFrame, list[EventAvai
             EventAvailability("nfp", True, "rule-derived (first Friday)", 0, str(RAW_CALENDAR))
         )
 
-    return df, availability
+    # Trim back to what was asked for, now that every flag has been computed
+    # over whole quarters and whole weeks.
+    mask = (df["day"] >= requested_start) & (df["day"] <= requested_end)
+    return df[mask].reset_index(drop=True), availability
 
 
 def _is_last_session_of_quarter_factory(df: pd.DataFrame):

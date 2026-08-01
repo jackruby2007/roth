@@ -352,6 +352,92 @@ def _report_theta_error(exc: Exception) -> None:
         console.print(f"  {line}")
 
 
+features_app = typer.Typer(no_args_is_help=True, help="Build and verify the feature store.")
+app.add_typer(features_app, name="features")
+
+
+@features_app.command("build")
+def features_build_cmd(
+    symbol: str = typer.Option(None, help="One symbol, or all configured symbols."),
+) -> None:
+    """Build the daily feature table.
+
+    Every row contains only what was knowable by that session's close.
+    """
+    from roth.features.build import build_all
+
+    symbols = (symbol,) if symbol else config.SYMBOLS
+    counts = build_all(symbols)
+
+    table = Table(title="Feature tables")
+    table.add_column("Symbol")
+    table.add_column("Sessions", justify="right")
+    for sym, n in counts.items():
+        table.add_row(sym, f"{n:,}")
+    console.print(table)
+
+    if all(v == 0 for v in counts.values()):
+        console.print(
+            "\n[yellow]No features built.[/yellow] There is no underlying data on disk."
+        )
+        raise typer.Exit(code=1)
+
+    console.print(
+        "\nRun [cyan]roth features verify[/cyan] to confirm no feature depends on "
+        "future data."
+    )
+
+
+@features_app.command("verify")
+def features_verify_cmd(
+    symbol: str = typer.Option(None, help="One symbol, or all configured symbols."),
+    cutoffs: int = typer.Option(4, help="Number of truncation points to test."),
+) -> None:
+    """Verify causality by point-in-time invariance.
+
+    Rebuilds the feature table with history truncated at several cutoff dates
+    and confirms every value at or before each cutoff is identical to the
+    full-history build. A feature that peeks forward cannot survive this.
+    """
+    from roth.features.causality import verify_causality
+
+    symbols = (symbol,) if symbol else config.SYMBOLS
+    failed = False
+
+    for sym in symbols:
+        console.print(f"[bold]{sym}[/bold] - rebuilding at {cutoffs} cutoff dates...")
+        result = verify_causality(sym, n_cutoffs=cutoffs)
+
+        if not result.cutoffs:
+            console.print("  [yellow]no data[/yellow]")
+            continue
+
+        if result.passed:
+            console.print(f"  [green]{result.summary()}[/green]")
+        else:
+            failed = True
+            console.print(f"  [red]{result.summary()}[/red]\n")
+            for v in result.violations[:15]:
+                console.print(
+                    f"    [red]{v.column}[/red] truncated at {v.cutoff}: "
+                    f"{v.rows_differing} row(s) differ"
+                )
+                console.print(
+                    f"      {v.example_day}: full history gave {v.full_value!r}, "
+                    f"truncated gave {v.truncated_value!r}"
+                )
+
+    if failed:
+        console.print(
+            "\n[red]Causality verification failed.[/red] A feature above changes value "
+            "when future data is removed, which means it is using that future data.\n"
+            "Every backtest result depending on those columns is invalid until fixed."
+        )
+        raise typer.Exit(code=1)
+
+    console.print("\n[green]All features are causal.[/green]")
+
+
 @app.command()
 def quality(
     start: str = typer.Option(None, help="First date YYYY-MM-DD."),
