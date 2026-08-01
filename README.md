@@ -27,13 +27,58 @@ Then confirm everything is in place:
 uv run roth doctor
 ```
 
-## Commands available today
+## Quick start
+
+Without a data subscription, the whole pipeline can be exercised on a generated
+dataset:
+
+```
+uv run roth synth            # generate a synthetic dataset
+uv run roth quality          # check it, write the quarantine table
+uv run roth features build   # build the feature store
+uv run roth features verify  # prove no feature sees the future
+uv run roth verify           # run the correctness tests
+uv run roth backtest         # run the reference strategy, print the report
+```
+
+The synthetic data is fabricated and every report built on it says so. It
+proves the plumbing runs; it says nothing about whether a strategy has an edge.
+
+## Commands
 
 | Command | What it does |
 | --- | --- |
-| `roth doctor` | Checks Python, dependencies, and whether Theta Terminal is reachable. |
+| `roth doctor` | Checks dependencies and whether Theta Terminal is reachable. |
 | `roth pilot` | Downloads one month of real option quotes and measures disk footprint and download time. |
 | `roth estimate` | Extrapolates the full backfill cost, using pilot measurements if they exist. |
+| `roth ingest calendar` | Builds the trading calendar. Needs no subscription. |
+| `roth ingest underlying` | Downloads underlying daily and 1-minute bars. |
+| `roth ingest options-eod` | Downloads EOD option chains within the configured bounds. |
+| `roth synth` | Generates a synthetic dataset for pipeline verification. |
+| `roth quality` | Runs data quality checks and writes the quarantine table. |
+| `roth features build` | Builds the feature store. |
+| `roth features verify` | Proves no feature depends on future data. |
+| `roth verify` | Runs the four correctness tests. |
+| `roth backtest` | Runs a strategy and prints the full performance report. |
+| `roth strategies` | Lists available strategies. |
+| `roth status` | Shows what is currently on disk. |
+
+## Adding a hypothesis
+
+Write one strategy class and nothing else. See `docs/PHASE1.md` for the shape.
+Every rule evaluation is stored for every candidate signal, failures included,
+so `roth backtest --explain <signal_id>` explains any decision the engine made.
+
+## What makes the results trustworthy
+
+- **Fills never happen at mid.** Buys cross to the ask, sells to the bid,
+  against the historical NBBO. Unusable quotes are rejected, never repaired.
+- **Lookahead is structurally blocked.** Every read goes through a forward-only
+  cursor that raises on any attempt to read the future.
+- **Features are verified causal**, by rebuilding the table with history
+  truncated and requiring every earlier value to be identical.
+- **`roth verify`** runs a known-answer test, a lookahead trap, a
+  cost-sensitivity comparison, and a timezone check.
 
 ## The pilot download
 

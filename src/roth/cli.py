@@ -353,6 +353,133 @@ def _report_theta_error(exc: Exception) -> None:
 
 
 @app.command()
+def backtest(
+    strategy: str = typer.Option(
+        "reference_monday_call", help="Strategy name. See `roth strategies`."
+    ),
+    symbol: str = typer.Option(None, help="One symbol, or all configured symbols."),
+    start: str = typer.Option(None, help="First date YYYY-MM-DD."),
+    end: str = typer.Option(None, help="Last date YYYY-MM-DD."),
+    mid_fills: bool = typer.Option(
+        False, "--mid-fills", help="Fill at mid instead of bid/ask. Comparison only."
+    ),
+    slippage: float = typer.Option(
+        None, help="Extra slippage per contract, on top of crossing the spread."
+    ),
+    include_quarantined: bool = typer.Option(
+        False, "--include-quarantined", help="Do not exclude quarantined sessions."
+    ),
+    csv: bool = typer.Option(False, "--csv", help="Also export CSV files."),
+    explain: int = typer.Option(None, help="Explain one signal by id, then exit."),
+) -> None:
+    """Run a strategy and print the full performance report."""
+    import dataclasses
+
+    from roth.backtest.runner import run_backtest
+    from roth.journal import explain_signal, make_run_id, write_journal
+    from roth.report import build_report, export_csv, render_text
+    from roth.strategies import STRATEGIES
+
+    ensure_dirs()
+
+    if strategy not in STRATEGIES:
+        console.print(
+            f"[red]Unknown strategy {strategy!r}.[/red] Available: "
+            f"{', '.join(sorted(STRATEGIES))}"
+        )
+        raise typer.Exit(code=1)
+
+    costs = config.COSTS
+    if slippage is not None:
+        costs = dataclasses.replace(costs, extra_slippage_per_contract=slippage)
+
+    symbols = (symbol,) if symbol else config.SYMBOLS
+    instance = STRATEGIES[strategy]()
+
+    result = run_backtest(
+        instance,
+        symbols,
+        start=_parse_date(start),
+        end=_parse_date(end),
+        costs=costs,
+        use_mid_fills=mid_fills,
+        exclude_quarantined=not include_quarantined,
+    )
+
+    if explain is not None:
+        console.print(explain_signal(result, explain))
+        return
+
+    trades = result.trades_frame()
+    perf = build_report(
+        trades,
+        strategy_name=result.strategy_name,
+        strategy_version=result.strategy_version,
+        symbols=result.symbols,
+        unfillable_signals=result.unfillable_count,
+        unfillable_entries=sum(1 for u in result.unfillable if u.action == "entry"),
+        unfillable_exits=sum(1 for u in result.unfillable if u.action == "exit"),
+        candidate_signals=result.candidate_signals,
+        quarantined_sessions=result.quarantined_sessions_excluded,
+        synthetic_data=result.synthetic_data,
+        used_mid_fills=result.used_mid_fills,
+    )
+
+    console.print(render_text(perf), highlight=False)
+
+    run_id = make_run_id(result)
+    counts = write_journal(result, run_id)
+    console.print(
+        f"\nJournal written: {counts['trades']:,} trades, "
+        f"{counts['rule_evaluations']:,} rule evaluations, "
+        f"{counts['unfillable']:,} unfillable signals."
+    )
+
+    if not trades.empty:
+        summary = result.rule_filter_summary()
+        table = Table(title="Which rule does the filtering")
+        table.add_column("Rule")
+        table.add_column("Evaluations", justify="right")
+        table.add_column("Failures", justify="right")
+        table.add_column("Fail rate", justify="right")
+        for _, r in summary.iterrows():
+            table.add_row(
+                r["rule_name"],
+                f"{int(r['evaluations']):,}",
+                f"{int(r['failures']):,}",
+                f"{r['fail_rate']:.1%}",
+            )
+        console.print(table)
+
+    if csv:
+        from roth.paths import REPORTS
+
+        paths = export_csv(perf, trades, REPORTS)
+        console.print("\nCSV exported:")
+        for k, v in paths.items():
+            console.print(f"  {k}: {v}")
+
+    console.print(
+        f"\n[dim]Explain any signal with "
+        f"[cyan]roth backtest --strategy {strategy} --explain <id>[/cyan][/dim]"
+    )
+
+
+@app.command()
+def strategies() -> None:
+    """List available strategies."""
+    from roth.strategies import STRATEGIES
+
+    table = Table(title="Strategies")
+    table.add_column("Name")
+    table.add_column("Version")
+    table.add_column("Structure")
+    for name, cls in sorted(STRATEGIES.items()):
+        table.add_row(name, cls.version, cls.structure_type)
+    console.print(table)
+
+
+@app.command()
 def verify() -> None:
     """Run the correctness tests.
 

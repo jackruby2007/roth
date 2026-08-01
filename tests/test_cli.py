@@ -24,6 +24,14 @@ COMMANDS = [
     ["ingest", "calendar"],
     ["ingest", "underlying"],
     ["ingest", "options-eod"],
+    ["synth"],
+    ["quality"],
+    ["features"],
+    ["features", "build"],
+    ["features", "verify"],
+    ["backtest"],
+    ["strategies"],
+    ["verify"],
 ]
 
 

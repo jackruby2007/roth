@@ -89,6 +89,7 @@ class ClosedTrade:
     signal_id: int
 
     strikes: str
+    contract_ids: str
     expiration: date
     contracts: int
 
@@ -262,6 +263,7 @@ class BacktestEngine:
             signal_day=pos.signal_day,
             signal_id=pos.signal_id,
             strikes="/".join(f"{leg.strike:g}" for leg in pos.legs),
+            contract_ids="/".join(leg.occ_symbol(pos.symbol) for leg in pos.legs),
             expiration=pos.expiration,
             contracts=pos.contracts,
             entry_price=pos.entry_price_per_unit,

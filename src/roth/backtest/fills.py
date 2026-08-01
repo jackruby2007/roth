@@ -74,6 +74,19 @@ class Leg:
     expiration: date
     quantity: int = 1
 
+    def occ_symbol(self, root: str) -> str:
+        """OCC contract identifier, e.g. SPY240621C00500000.
+
+        The industry-standard identifier, so a journalled trade can be matched
+        against a broker statement or a third-party dataset without ambiguity
+        about which contract was meant.
+        """
+        strike_thousandths = int(round(self.strike * 1000))
+        return (
+            f"{root.upper()}{self.expiration:%y%m%d}{self.right.value}"
+            f"{strike_thousandths:08d}"
+        )
+
 
 @dataclass(frozen=True)
 class Quote:
