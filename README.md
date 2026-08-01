@@ -49,6 +49,7 @@ proves the plumbing runs; it says nothing about whether a strategy has an edge.
 | Command | What it does |
 | --- | --- |
 | `roth doctor` | Checks dependencies and whether Theta Terminal is reachable. |
+| `roth probe` | Tests every ThetaData endpoint and writes a diagnostic report. |
 | `roth pilot` | Downloads one month of real option quotes and measures disk footprint and download time. |
 | `roth estimate` | Extrapolates the full backfill cost, using pilot measurements if they exist. |
 | `roth ingest calendar` | Builds the trading calendar. Needs no subscription. |
@@ -79,6 +80,12 @@ so `roth backtest --explain <signal_id>` explains any decision the engine made.
   truncated and requiring every earlier value to be identical.
 - **`roth verify`** runs a known-answer test, a lookahead trap, a
   cost-sensitivity comparison, and a timezone check.
+
+## Running with real data for the first time
+
+See **`docs/FIRST_RUN.md`** for the full step-by-step. The short version:
+install uv and Java 21, start Theta Terminal, then run `roth probe` and send
+back the report it writes.
 
 ## The pilot download
 

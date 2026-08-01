@@ -20,6 +20,7 @@ COMMANDS = [
     ["status"],
     ["estimate"],
     ["pilot"],
+    ["probe"],
     ["ingest"],
     ["ingest", "calendar"],
     ["ingest", "underlying"],

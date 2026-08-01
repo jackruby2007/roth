@@ -83,6 +83,55 @@ def doctor() -> None:
 
 
 @app.command()
+def probe(
+    root: str = typer.Option("SPY", help="Symbol to probe with."),
+) -> None:
+    """Test every ThetaData endpoint and write a report.
+
+    Run this once, immediately after Theta Terminal connects for the first
+    time. It checks every endpoint the harness uses, tries alternates where a
+    path might differ, and discovers how far back your subscription can read.
+
+    It writes one file. Send that file back and the client gets corrected from
+    evidence rather than guesswork.
+    """
+    from roth.data.probe import run_probe
+
+    console.print("[bold]Probing ThetaData[/bold]")
+    console.print(f"Connecting to {config.THETA.base_url}\n")
+
+    report, path = run_probe(root=root)
+
+    for r in report.results:
+        style = "green" if r.ok else "red"
+        console.print(f"  [{style}]{r.summary()}[/{style}]")
+
+    console.print(
+        f"\n[bold]{len(report.passed)} ok, {len(report.failed)} failed[/bold]"
+    )
+
+    if report.notes:
+        console.print("\n[bold]Notes[/bold]")
+        for n in report.notes:
+            console.print(f"  - {n}")
+
+    console.print(f"\n[green]Report written to:[/green] {path}")
+
+    if not report.passed:
+        console.print(
+            "\n[red]Nothing succeeded.[/red] The most likely cause is that Theta "
+            "Terminal is not running or has not finished connecting.\n"
+            "Run [cyan]roth doctor[/cyan] to check, then try again."
+        )
+        raise typer.Exit(code=1)
+
+    console.print(
+        "\n[bold]Send that file back.[/bold] It contains no credentials -- only "
+        "endpoint paths, HTTP status codes, and column names."
+    )
+
+
+@app.command()
 def pilot(
     symbol: str = typer.Option("SPY", help="Underlying to pilot."),
     start: str = typer.Option(None, help="Start date YYYY-MM-DD. Defaults to last full month."),
