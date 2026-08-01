@@ -1,0 +1,15 @@
+# Downloaded data is never committed. It is large, it is rebuildable, and raw
+# downloads are licensed from ThetaData. Anchored to the repo root so it does
+# not swallow the src/roth/data package.
+/data/
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
