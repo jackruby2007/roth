@@ -11,7 +11,7 @@ the only thing you should ever have to do.
 
 ---
 
-## Step 1 — Install two things
+## Step 1 — Install three things
 
 **uv** (manages Python; you do not need Python installed first)
 
@@ -19,6 +19,15 @@ the only thing you should ever have to do.
 | --- | --- |
 | macOS / Linux | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | Windows (PowerShell) | `powershell -c "irm https://astral.sh/uv/install.ps1 \| iex"` |
+
+**git** — Windows does not ship with it. macOS and most Linux systems already
+have it.
+
+| Your machine | Where |
+| --- | --- |
+| Windows | Download from git-scm.com, run the installer, accept the defaults |
+| macOS | Already present, or `xcode-select --install` |
+| Linux | `sudo apt install git` |
 
 **Java 21 or newer** — Theta Terminal is a Java program and will not start
 without it.
@@ -64,7 +73,10 @@ That is correct at this point — the terminal is not running yet.
 
 Download it from your ThetaData account dashboard. It is a `.jar` file.
 
-Put it somewhere you can find it, then run:
+Put it in the `roth` folder you just cloned. That keeps the command short, and
+`.jar` files are excluded from version control so it will not be committed.
+
+Then run:
 
 ```
 java -jar ThetaTerminal.jar YOUR_EMAIL YOUR_PASSWORD

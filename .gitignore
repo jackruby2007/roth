@@ -13,3 +13,6 @@ htmlcov/
 *.egg-info/
 dist/
 build/
+
+# Theta Terminal is downloaded from your ThetaData account, not committed.
+*.jar
