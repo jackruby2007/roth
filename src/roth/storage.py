@@ -244,9 +244,26 @@ def read_dataset(
             clauses.append(f"day <= DATE '{end.isoformat()}'")
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
-        return con.execute(sql).fetchdf()
+        return _normalise_date_columns(con.execute(sql).fetchdf())
     finally:
         con.close()
+
+
+DATE_COLUMNS = ("day", "expiration_date")
+
+
+def _normalise_date_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Force date-typed columns to `datetime.date`.
+
+    DuckDB hands these back as `datetime.date` or `Timestamp` depending on how
+    the parquet was written. Mixing the two inside one column makes any groupby
+    or set membership on it fail, so the type is pinned at the read boundary
+    rather than defensively re-checked by every caller.
+    """
+    for col in DATE_COLUMNS:
+        if col in df.columns and len(df):
+            df[col] = pd.to_datetime(df[col]).dt.date
+    return df
 
 
 def dataset_summary(path: Path | None = None) -> pd.DataFrame:

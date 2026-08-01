@@ -352,6 +352,92 @@ def _report_theta_error(exc: Exception) -> None:
         console.print(f"  {line}")
 
 
+@app.command()
+def quality(
+    start: str = typer.Option(None, help="First date YYYY-MM-DD."),
+    end: str = typer.Option(None, help="Last date YYYY-MM-DD."),
+    symbol: str = typer.Option(None, help="One symbol, or all configured symbols."),
+    detail: bool = typer.Option(False, "--detail", help="List every quarantined session."),
+) -> None:
+    """Run data quality checks and write the quarantine table.
+
+    Runs before any research. Quarantined sessions are excluded from research by
+    default, and the count appears in every report.
+    """
+    from roth.data.synth import is_synthetic
+    from roth.quality import persist_quarantine, run_quality
+    from roth.storage import read_manifest
+
+    ensure_dirs()
+
+    if read_manifest().empty:
+        console.print(
+            "[yellow]No data on disk.[/yellow] Nothing to check.\n"
+            "Run [cyan]roth synth[/cyan] to generate a dataset, or ingest real data."
+        )
+        raise typer.Exit(code=1)
+
+    if is_synthetic():
+        console.print("[yellow]SYNTHETIC DATA[/yellow] - these findings describe fabricated data.\n")
+
+    symbols = (symbol,) if symbol else config.SYMBOLS
+
+    # Default to the span the data actually covers. Defaulting to a fixed early
+    # date would report every session before the first download as "missing",
+    # which is true but useless.
+    manifest = read_manifest()
+    d_start = _parse_date(start) or manifest["day"].min()
+    d_end = _parse_date(end) or manifest["day"].max()
+    console.print(f"[dim]Checking {d_start} to {d_end}[/dim]\n")
+
+    report = run_quality(symbols, d_start, d_end)
+
+    summary = report.by_check()
+    if summary.empty:
+        console.print("[green]No quality findings.[/green]")
+    else:
+        table = Table(title="Quality findings")
+        table.add_column("Check")
+        table.add_column("Severity")
+        table.add_column("Sessions", justify="right")
+        table.add_column("Occurrences", justify="right")
+        for _, row in summary.iterrows():
+            style = "red" if row["severity"] == "quarantine" else "yellow"
+            table.add_row(
+                row["check"],
+                f"[{style}]{row['severity']}[/{style}]",
+                f"{int(row['sessions']):,}",
+                f"{int(row['occurrences']):,}",
+            )
+        console.print(table)
+
+    qframe = persist_quarantine(report)
+    n_quarantined = len(report.quarantined_days)
+
+    console.print(
+        f"\n[bold]Sessions quarantined:[/bold] {n_quarantined:,} "
+        f"(excluded from research by default)"
+    )
+    console.print(f"[bold]Findings flagged, not excluded:[/bold] {len(report.flags):,}")
+    console.print(
+        "\n[dim]Flagged findings are real market conditions, not corrupt data. Wide\n"
+        "spreads and isolated crossed quotes are handled by the fill model at trade\n"
+        "time, which rejects the affected contract rather than the whole session.[/dim]"
+    )
+
+    if detail and not qframe.empty:
+        dtable = Table(title="Quarantined sessions")
+        dtable.add_column("Symbol")
+        dtable.add_column("Day")
+        dtable.add_column("Check")
+        dtable.add_column("Detail")
+        for _, row in qframe.head(80).iterrows():
+            dtable.add_row(row["symbol"], str(row["day"]), row["check"], row["detail"])
+        console.print(dtable)
+        if len(qframe) > 80:
+            console.print(f"[dim]... and {len(qframe) - 80} more[/dim]")
+
+
 @app.command("synth")
 def synth_cmd(
     start: str = typer.Option("2022-01-01", help="First date YYYY-MM-DD."),

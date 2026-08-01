@@ -65,7 +65,8 @@ class SynthSpec:
     # Deliberate defects, as a fraction of sessions.
     crossed_quote_rate: float = 0.002
     absurd_spread_rate: float = 0.004
-    missing_minute_rate: float = 0.001
+    # Fraction of *sessions* that lose a block of minute bars.
+    missing_minute_rate: float = 0.02
 
 
 SPECS: dict[str, SynthSpec] = {
@@ -126,15 +127,23 @@ def _simulate_daily(spec: SynthSpec, days: list[date]) -> pd.DataFrame:
 
 
 def _simulate_minutes(
-    spec: SynthSpec, day: date, day_row: pd.Series, session_open: pd.Timestamp, rng
+    spec: SynthSpec,
+    day: date,
+    day_row: pd.Series,
+    session_open: pd.Timestamp,
+    rng,
+    n_minutes: int = MINUTES_PER_SESSION,
 ) -> pd.DataFrame:
     """A Brownian bridge from the open to the close, with a U-shaped volume day.
 
     A bridge rather than a fresh random walk, so the minute bars are consistent
     with the daily bar they belong to. Inconsistent daily and minute data would
     make the quality layer's cross-checks meaningless.
+
+    `n_minutes` comes from the session's actual length, so early closes produce
+    short sessions the way real data does.
     """
-    n = MINUTES_PER_SESSION
+    n = n_minutes
     o, c = float(day_row["open"]), float(day_row["close"])
     hi, lo = float(day_row["high"]), float(day_row["low"])
 
@@ -160,7 +169,7 @@ def _simulate_minutes(
 
     # U-shaped intraday volume: heavy at the open and the close.
     shape = 1.0 + 2.0 * (np.linspace(-1, 1, n) ** 2)
-    volume = (float(day_row["volume"]) / n) * shape * rng.lognormal(0, 0.2, n)
+    volume = (float(day_row["volume"]) / max(n, 1)) * shape * rng.lognormal(0, 0.2, n)
 
     ts = pd.date_range(session_open, periods=n, freq="1min", tz="UTC")
 
@@ -178,7 +187,7 @@ def _simulate_minutes(
     )
 
     # Deliberate gaps, so the quality layer has missing bars to find.
-    if rng.random() < spec.missing_minute_rate * MINUTES_PER_SESSION:
+    if rng.random() < spec.missing_minute_rate:
         drop_start = int(rng.integers(30, n - 30))
         df = df.drop(index=range(drop_start, min(drop_start + 12, n))).reset_index(drop=True)
 
@@ -352,8 +361,13 @@ def generate(
     sessions_df = trading_sessions(start, end)
     days = list(sessions_df["day"])
     opens = list(pd.to_datetime(sessions_df["session_open_utc"], utc=True))
+    closes = list(pd.to_datetime(sessions_df["session_close_utc"], utc=True))
     if not days:
         raise ValueError(f"No trading sessions between {start} and {end}")
+
+    # Real session length, so early closes yield short sessions rather than a
+    # uniform 390 bars the quality layer would never be tested against.
+    session_minutes = [int((c - o).total_seconds() // 60) for o, c in zip(opens, closes, strict=True)]
 
     expirations = _build_expiration_grid(days)
     vix_source: pd.DataFrame | None = None
@@ -375,7 +389,9 @@ def generate(
         if with_minute:
             minute_rows = 0
             for i, day in enumerate(days):
-                mdf = _simulate_minutes(spec, day, daily.iloc[i], opens[i], rng)
+                mdf = _simulate_minutes(
+                    spec, day, daily.iloc[i], opens[i], rng, n_minutes=session_minutes[i]
+                )
                 write_raw(mdf, RAW_UNDERLYING_MINUTE, "underlying_minute", symbol, day)
                 minute_rows += len(mdf)
             counts[f"{symbol}_minute"] = minute_rows
