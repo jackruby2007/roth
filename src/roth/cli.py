@@ -230,6 +230,159 @@ def estimate(
     )
 
 
+ingest_app = typer.Typer(no_args_is_help=True, help="Download data into the immutable raw store.")
+app.add_typer(ingest_app, name="ingest")
+
+
+@ingest_app.command("calendar")
+def ingest_calendar_cmd(
+    start: str = typer.Option("2018-01-01", help="First date YYYY-MM-DD."),
+    end: str = typer.Option(None, help="Last date YYYY-MM-DD. Defaults to one year ahead."),
+) -> None:
+    """Build the trading calendar. Needs no data feed and no subscription."""
+    from roth.data.ingest import ingest_calendar
+
+    start_d = _parse_date(start)
+    end_d = _parse_date(end) or date.today().replace(year=date.today().year + 1)
+
+    df, availability = ingest_calendar(start_d, end_d)
+    console.print(f"[green]Wrote {len(df):,} trading sessions[/green] ({start_d} to {end_d})\n")
+
+    table = Table(title="Calendar flags")
+    table.add_column("Flag")
+    table.add_column("Source")
+    table.add_column("Days marked", justify="right")
+
+    for name, label in (
+        ("is_monthly_opex", "third Friday, computed"),
+        ("is_quarterly_opex", "third Friday of Mar/Jun/Sep/Dec, computed"),
+        ("is_opex_week", "computed"),
+        ("is_quarter_end", "last session of quarter, computed"),
+        ("is_early_close", "NYSE calendar"),
+        ("is_short_week", "computed"),
+    ):
+        table.add_row(name, label, f"{int(df[name].sum()):,}")
+
+    for avail in availability:
+        flag = f"is_{avail.name}_day"
+        if not avail.available:
+            table.add_row(flag, f"[red]UNAVAILABLE ({avail.source})[/red]", "-")
+        else:
+            marked = int(df[flag].sum()) if flag in df else 0
+            style = "yellow" if "rule" in avail.source else "green"
+            table.add_row(flag, f"[{style}]{avail.source}[/{style}]", f"{marked:,}")
+
+    console.print(table)
+
+    missing = [a for a in availability if not a.available]
+    if missing:
+        console.print(
+            "\n[yellow]Some event flags are unavailable.[/yellow] They are stored as null, "
+            "not False, so no day is silently mislabelled as a non-event day."
+        )
+        for a in missing:
+            console.print(f"  {a.name}: put a CSV with a 'date' column at\n    {a.path}")
+
+
+@ingest_app.command("underlying")
+def ingest_underlying_cmd(
+    symbol: str = typer.Option(None, help="One symbol, or all configured symbols by default."),
+    start: str = typer.Option(None, help="First date YYYY-MM-DD."),
+    end: str = typer.Option(None, help="Last date YYYY-MM-DD."),
+    minute: bool = typer.Option(False, "--minute", help="Also pull 1-minute bars."),
+) -> None:
+    """Download underlying daily (and optionally 1-minute) bars."""
+    from roth.data.ingest import (
+        default_backfill_range,
+        ingest_underlying_daily,
+        ingest_underlying_minute,
+        ingest_vix_daily,
+    )
+    from roth.data.thetadata import ThetaError
+
+    d_start, d_end = default_backfill_range()
+    d_start = _parse_date(start) or d_start
+    d_end = _parse_date(end) or d_end
+    symbols = (symbol,) if symbol else config.SYMBOLS
+
+    try:
+        for sym in symbols:
+            console.print(f"[bold]{sym} daily[/bold] {d_start} to {d_end}")
+            console.print(f"  {ingest_underlying_daily(sym, d_start, d_end).summary()}")
+            if minute:
+                console.print(f"[bold]{sym} 1-minute[/bold]")
+                console.print(f"  {ingest_underlying_minute(sym, d_start, d_end).summary()}")
+        console.print("[bold]VIX daily[/bold]")
+        console.print(f"  {ingest_vix_daily(d_start, d_end).summary()}")
+    except ThetaError as exc:
+        _report_theta_error(exc)
+        raise typer.Exit(code=1) from exc
+
+
+@ingest_app.command("options-eod")
+def ingest_options_eod_cmd(
+    symbol: str = typer.Option(None, help="One symbol, or all configured symbols by default."),
+    start: str = typer.Option(None, help="First date YYYY-MM-DD."),
+    end: str = typer.Option(None, help="Last date YYYY-MM-DD."),
+) -> None:
+    """Download end-of-day option chains, bounded to the configured strike and expiry window."""
+    from roth.data.ingest import default_backfill_range, ingest_option_eod
+    from roth.data.thetadata import ThetaError
+
+    d_start, d_end = default_backfill_range()
+    d_start = _parse_date(start) or d_start
+    d_end = _parse_date(end) or d_end
+    symbols = (symbol,) if symbol else config.SYMBOLS
+
+    try:
+        for sym in symbols:
+            console.print(f"[bold]{sym} option EOD[/bold] {d_start} to {d_end}")
+            result = ingest_option_eod(sym, d_start, d_end)
+            console.print(f"  {result.summary()}")
+            for f in result.failures[:10]:
+                console.print(f"    [yellow]{f}[/yellow]")
+    except ThetaError as exc:
+        _report_theta_error(exc)
+        raise typer.Exit(code=1) from exc
+
+
+def _report_theta_error(exc: Exception) -> None:
+    console.print("\n[red]Download could not run.[/red]\n")
+    for line in str(exc).splitlines():
+        console.print(f"  {line}")
+
+
+@app.command()
+def status() -> None:
+    """Show what is currently on disk."""
+    from roth.storage import dataset_summary
+
+    ensure_dirs()
+    df = dataset_summary(None)
+    if df.empty:
+        console.print(
+            "[yellow]No data ingested yet.[/yellow]\n\n"
+            "Start with [cyan]roth ingest calendar[/cyan], which needs no subscription."
+        )
+        return
+
+    table = Table(title="Raw data on disk")
+    for col in ("Dataset", "Symbol", "Days", "Rows", "Size", "First", "Last"):
+        table.add_column(col, justify="right" if col in ("Days", "Rows", "Size") else "left")
+
+    for _, row in df.iterrows():
+        table.add_row(
+            row["dataset"],
+            row["symbol"],
+            f"{int(row['days']):,}",
+            f"{int(row['rows']):,}",
+            human_bytes(int(row["bytes"])),
+            str(row["first_day"]),
+            str(row["last_day"]),
+        )
+    console.print(table)
+
+
 def main() -> None:
     app()
 
