@@ -1,12 +1,21 @@
 # roth
 
-A research harness for testing options trading hypotheses on SPY and QQQ.
+Two things live here, and the separation between them is deliberate.
 
-It is not a trading bot, not a dashboard, and not a live system. It answers one
+**The research harness** tests options trading hypotheses on SPY and QQQ. It is
+not a trading bot, not a dashboard, and not a live system. It answers one
 question at a time: **does this specific setup have a positive expectancy after
 realistic execution costs?**
 
-## How it runs
+**The news bot** (`roth news`) watches NVDA, TSLA, META, AAPL, AMZN, MSFT, AVGO
+and GOOGL through the pre-market and the session, and tells you when something
+material happens. See **`docs/NEWS_BOT.md`**.
+
+They share the trading calendar and nothing else. Nothing the news bot collects
+is ever written into `data/raw/`: a live feed is not reproducible, and the
+harness's whole claim rests on being so. Neither subsystem places a trade.
+
+## How the harness runs
 
 Everything runs on demand through one command. There is no database server, no
 web server, no Docker, and no scheduled job. Storage is parquet files on local
@@ -14,6 +23,10 @@ disk, queried with DuckDB, which is a library rather than a service.
 
 The only process that ever needs to be running is ThetaData's Theta Terminal,
 and only while a download is in progress. Never after.
+
+The news bot is the one exception to all of this, and it is why it is described
+separately: `roth news watch` is a long-running foreground process that talks to
+the public internet.
 
 ## Setup
 
@@ -63,6 +76,33 @@ proves the plumbing runs; it says nothing about whether a strategy has an edge.
 | `roth backtest` | Runs a strategy and prints the full performance report. |
 | `roth strategies` | Lists available strategies. |
 | `roth status` | Shows what is currently on disk. |
+
+## The news bot
+
+Separate subsystem, separate docs: **`docs/NEWS_BOT.md`**. The short version:
+
+```
+export ROTH_SEC_CONTACT='you@example.com'   # SEC blocks unidentified clients
+uv run roth news doctor                     # verify every source, live
+uv run roth news brief                      # pre-market picture
+uv run roth news watch                      # leave running all day
+```
+
+| Command | What it does |
+| --- | --- |
+| `roth news watch` | Polls all day, alerting on material news. Ctrl-C to stop. |
+| `roth news brief` | Prices, overnight moves, and the news behind them. |
+| `roth news once` | One poll, emit what is new, exit. Suitable for cron. |
+| `roth news doctor` | Verifies every source end to end on this machine. |
+| `roth news symbols` | The watchlist and the CIK each symbol resolves to. |
+
+Sources are SEC EDGAR filings (authoritative, free) plus Yahoo headlines and
+quotes (unofficial, free). No API key is needed. A dead source degrades the
+stream and says so rather than implying the day was quiet.
+
+**Run `roth news doctor` before trusting it.** The parsers were built against
+recorded fixtures because the development environment could not reach any
+finance host; `doctor` is what confirms the live endpoints still match.
 
 ## Adding a hypothesis
 
@@ -126,5 +166,8 @@ These are enforced at download time, not at query time.
 
 ## Project status
 
-Phase 1, step 1 of 8. See `docs/PHASE1.md` for the full plan and where things
-stand.
+Harness: Phase 1, step 1 of 8. See `docs/PHASE1.md` for the full plan and where
+things stand.
+
+News bot: complete and tested, pending a live `roth news doctor` run on a
+machine with unrestricted network access. See `docs/NEWS_BOT.md`.

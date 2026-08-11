@@ -42,6 +42,10 @@ RULE_EVALS = DERIVED / "rule_evals"
 REPORTS = DATA / "reports"
 PILOT = DATA / "pilot"
 
+# State for the live news bot: the seen-store and the emitted alert stream.
+# Not raw data and not derived from it, so it sits outside both trees.
+NEWS = DATA / "news"
+
 ALL_DIRS = [
     RAW,
     RAW_OPTION_QUOTES,
@@ -57,6 +61,7 @@ ALL_DIRS = [
     RULE_EVALS,
     REPORTS,
     PILOT,
+    NEWS,
 ]
 
 

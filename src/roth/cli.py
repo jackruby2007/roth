@@ -861,6 +861,271 @@ def status() -> None:
     console.print(table)
 
 
+# ---------------------------------------------------------------------------
+# Live news bot
+# ---------------------------------------------------------------------------
+#
+# This is the one part of the project that runs continuously and talks to the
+# public internet. It shares the trading calendar with the research harness and
+# nothing else -- no data it collects ever reaches data/raw/, because a live
+# feed is not reproducible and the harness's whole claim rests on being so.
+
+news_app = typer.Typer(
+    no_args_is_help=True,
+    help="Live news monitoring for the watchlist, during and around market hours.",
+)
+app.add_typer(news_app, name="news")
+
+
+def _news_options(
+    symbols: str | None,
+    min_score: int | None,
+    sink: list[str] | None,
+    webhook_url: str | None,
+    once: bool = False,
+    cadence: int | None = None,
+):
+    from roth.news.config import SYMBOLS, RuntimeOptions, ticker
+
+    if symbols:
+        chosen = tuple(s.strip().upper() for s in symbols.split(",") if s.strip())
+        for s in chosen:
+            ticker(s)  # raises with the full watchlist if unknown
+    else:
+        chosen = SYMBOLS
+
+    return RuntimeOptions(
+        symbols=chosen,
+        min_score=min_score,
+        sinks=tuple(sink) if sink else ("console",),
+        webhook_url=webhook_url,
+        once=once,
+        cadence_override=cadence,
+    )
+
+
+def _build_news_sinks(options, show_reasons: bool = False):
+    from roth.news.sinks import build_sinks
+
+    try:
+        sinks = build_sinks(
+            options.sinks,
+            webhook_url=options.webhook_url,
+            show_reasons=show_reasons,
+            console=console,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=2) from None
+
+    for sink in sinks:
+        if getattr(sink, "name", "") == "desktop" and not getattr(sink, "available", True):
+            console.print(
+                "[yellow]Desktop notifications are unavailable on this machine.[/yellow]\n"
+                "  Run [cyan]roth news doctor[/cyan] for what is missing. "
+                "Other sinks are unaffected.\n"
+            )
+    return sinks
+
+
+_SYMBOLS_OPT = typer.Option(None, "--symbols", help="Comma-separated subset of the watchlist.")
+_SINK_OPT = typer.Option(
+    None, "--sink", help="Where alerts go: console, desktop, jsonl, webhook. Repeatable."
+)
+_WEBHOOK_OPT = typer.Option(None, "--webhook-url", help="Slack or Discord incoming webhook URL.")
+_SCORE_OPT = typer.Option(
+    None, "--min-score", help="Materiality floor 0-100. Overrides the per-phase default."
+)
+
+
+@news_app.command("watch")
+def news_watch(
+    symbols: str = _SYMBOLS_OPT,
+    min_score: int = _SCORE_OPT,
+    sink: list[str] = _SINK_OPT,
+    webhook_url: str = _WEBHOOK_OPT,
+    cadence: int = typer.Option(None, "--cadence", help="Override the poll interval, seconds."),
+    explain: bool = typer.Option(False, "--explain", help="Print why each item scored as it did."),
+) -> None:
+    """Watch the tape all day. Runs until you stop it with Ctrl-C.
+
+    The first cycle prints a brief and marks everything already published as
+    seen, so starting mid-session does not replay the morning. After that, only
+    genuinely new items are emitted, and the pre-open brief fires once per
+    session day at 08:00 ET.
+    """
+    from roth.news.runner import NewsRunner
+    from roth.news.session import SessionClock
+
+    ensure_dirs()
+    options = _news_options(symbols, min_score, sink, webhook_url, cadence=cadence)
+    sinks = _build_news_sinks(options, show_reasons=explain)
+
+    clock = SessionClock()
+    state = clock.state()
+    console.print(
+        f"[bold]Watching[/bold] {', '.join(options.symbols)}\n"
+        f"  {state.describe()}\n"
+        f"  sinks: {', '.join(options.sinks)}\n"
+        f"  Ctrl-C to stop.\n"
+    )
+
+    runner = NewsRunner(options, sinks, clock=clock)
+    if runner.store.load_error:
+        console.print(f"[yellow]Seen-store: {runner.store.load_error}[/yellow]\n")
+
+    try:
+        runner.run()
+    except KeyboardInterrupt:  # pragma: no cover - signal handler usually wins
+        pass
+    console.print("\n[dim]Stopped. Seen-store saved.[/dim]")
+
+
+@news_app.command("once")
+def news_once(
+    symbols: str = _SYMBOLS_OPT,
+    min_score: int = _SCORE_OPT,
+    sink: list[str] = _SINK_OPT,
+    webhook_url: str = _WEBHOOK_OPT,
+    explain: bool = typer.Option(False, "--explain", help="Print why each item scored as it did."),
+    replay: bool = typer.Option(
+        False, "--replay", help="Emit everything in the window, ignoring what was already seen."
+    ),
+) -> None:
+    """Run exactly one poll and emit whatever is new, then exit.
+
+    Useful from cron, and for checking the bot works without leaving it
+    running. `--replay` ignores the seen-store, which is how you see what the
+    bot would have said rather than what it has left to say.
+    """
+    from roth.news.dedupe import SeenStore
+    from roth.news.runner import NewsRunner
+    from roth.paths import NEWS
+
+    ensure_dirs()
+    options = _news_options(symbols, min_score, sink, webhook_url, once=True)
+    sinks = _build_news_sinks(options, show_reasons=explain)
+
+    store = SeenStore(path=NEWS / "seen.json") if replay else None
+    runner = NewsRunner(options, sinks, store=store)
+    try:
+        stats = runner.poll_once(prime=False)
+    finally:
+        if replay:
+            # A replay must not poison the real store with items it re-showed.
+            runner.http.close()
+            for s in sinks:
+                s.close()
+        else:
+            runner.close()
+
+    console.print(
+        f"[dim]{stats.fetched} items fetched, {stats.new_items} new, "
+        f"{stats.alerted} alerted, {stats.quotes} quotes.[/dim]"
+    )
+    for note in stats.degraded:
+        console.print(f"[yellow]![/yellow] {note}")
+
+
+@news_app.command("brief")
+def news_brief(
+    symbols: str = _SYMBOLS_OPT,
+    min_score: int = _SCORE_OPT,
+    sink: list[str] = _SINK_OPT,
+    webhook_url: str = _WEBHOOK_OPT,
+    hours: int = typer.Option(18, "--hours", help="How far back to gather news."),
+) -> None:
+    """Build the brief now: prices, overnight moves, and what was published.
+
+    This is the pre-market command. Run it with coffee at 08:00 and it tells
+    you which of the eight are already moving and what is behind it.
+    """
+    from roth.news.dedupe import SeenStore
+    from roth.news.runner import NewsRunner
+    from roth.paths import NEWS
+
+    ensure_dirs()
+    options = _news_options(symbols, min_score, sink, webhook_url, once=True)
+    sinks = _build_news_sinks(options)
+
+    # A brief is a snapshot, not a stream: it must show the window regardless
+    # of what the watcher has already alerted on, so it uses a throwaway store.
+    runner = NewsRunner(options, sinks, store=SeenStore(path=NEWS / "seen.json"))
+    for source in runner.sources:
+        if hasattr(source, "lookback_hours"):
+            source.lookback_hours = hours
+
+    try:
+        stats = runner.poll_once(prime=True)
+    finally:
+        runner.http.close()
+        for s in sinks:
+            s.close()
+
+    for note in stats.degraded:
+        console.print(f"[yellow]![/yellow] {note}")
+
+
+@news_app.command("doctor")
+def news_doctor(
+    symbol: str = typer.Option("AAPL", "--symbol", help="Symbol to probe the live sources with."),
+    offline: bool = typer.Option(False, "--offline", help="Skip every network check."),
+) -> None:
+    """Verify every source end to end, on this machine.
+
+    Worth running before you trust the bot. The parsers were built against
+    recorded fixtures because the development environment could not reach any
+    finance host, so this is the check that proves the live endpoints still
+    match. It also verifies the pinned CIK constants against SEC's own ticker
+    map, which is the one error EDGAR would otherwise answer successfully with
+    another company's filings.
+    """
+    from roth.news.doctor import FAIL, OK, WARN, run_checks, summarize
+
+    ensure_dirs()
+    console.print("[bold]News bot check[/bold]\n")
+
+    checks = run_checks(symbol=symbol.upper(), skip_network=offline)
+    colour = {OK: "green", WARN: "yellow", FAIL: "red"}
+
+    for check in checks:
+        console.print(
+            f"  [{colour[check.status]}]{check.status:<4}[/] {check.name}: {check.detail}"
+        )
+        for line in check.lines:
+            console.print(f"        [dim]{line}[/dim]")
+
+    ok, warn, fail = summarize(checks)
+    console.print(f"\n  {ok} ok, {warn} warnings, {fail} failures")
+
+    if fail:
+        console.print("\n[red]The bot will not work correctly until the failures above are fixed.[/red]")
+        raise typer.Exit(code=1)
+    if warn:
+        console.print("\n[yellow]Usable, with the limitations noted above.[/yellow]")
+    else:
+        console.print("\n[green]Every source verified.[/green]")
+
+
+@news_app.command("symbols")
+def news_symbols() -> None:
+    """List the watchlist and the CIK each symbol resolves to."""
+    from roth.news.config import WATCHLIST
+
+    table = Table(title="News watchlist")
+    table.add_column("Symbol", style="cyan")
+    table.add_column("Company")
+    table.add_column("SEC CIK", style="dim")
+
+    for tkr in WATCHLIST:
+        table.add_row(tkr.symbol, tkr.name, tkr.cik)
+    console.print(table)
+    console.print(
+        "\n[dim]CIKs are verified against SEC's ticker map by "
+        "[/dim][cyan]roth news doctor[/cyan][dim].[/dim]"
+    )
+
+
 def main() -> None:
     app()
 
